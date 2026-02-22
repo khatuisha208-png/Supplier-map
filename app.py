@@ -4,80 +4,81 @@ import plotly.express as px
 
 st.set_page_config(page_title="Supply Chain Dashboard", layout="wide")
 
-# EXACT filename on your GitHub
+# This must match your filename on GitHub exactly
 FILE_NAME = '17030125283_Isha Khatu_procurement_assignment.xlsx'
 
-st.title("🌍 Global Procurement Map")
+st.title("🌍 Global Supplier Procurement Map")
 
 @st.cache_data
-def load_and_clean_data(file):
-    # 1. Load the Excel File
-    xl = pd.ExcelFile(file)
-    sheet_names = xl.sheet_names
-    
-    # 2. Find the right sheets even if names vary slightly
-    s1 = [s for s in sheet_names if 'Tier-1' in s or 'Tier 1' in s][0]
-    s2 = [s for s in sheet_names if 'Tier-2' in s or 'Tier 2' in s][0]
-    s3 = [s for s in sheet_names if 'Tier-3' in s or 'Tier 3' in s][0]
+def load_data(file_path):
+    try:
+        xl = pd.ExcelFile(file_path)
+        all_sheets = xl.sheet_names
+        
+        # Helper to find sheets even with slight name differences
+        def find_sheet(keyword):
+            for name in all_sheets:
+                if keyword.lower() in name.lower():
+                    return name
+            return None
 
-    # 3. Read sheets and find the header automatically
-    # We look for the row that contains 'Ticker' or 'Company'
-    def read_clean_sheet(s_name):
-        df_raw = pd.read_excel(file, sheet_name=s_name)
-        # Find header row
-        for i, row in df_raw.iterrows():
-            if 'Ticker' in row.values or 'Company Name' in row.values:
-                df_raw.columns = row
-                df_raw = df_raw.iloc[i+1:].reset_index(drop=True)
-                break
-        return df_raw
+        sheet1 = find_sheet("Tier-1") or find_sheet("Tier 1")
+        sheet2 = find_sheet("Tier-2") or find_sheet("Tier 2")
+        sheet3 = find_sheet("Tier-3") or find_sheet("Tier 3")
 
-    df1 = read_clean_sheet(s1)
-    df2 = read_clean_sheet(s2)
-    df3 = read_clean_sheet(s3)
+        if not sheet1 or not sheet2:
+            st.error(f"Could not find Tier sheets. Available sheets: {all_sheets}")
+            return None
 
-    # 4. Standardize Country Mapping
-    mapping = {'US': 'USA', 'UK': 'United Kingdom', 'England': 'United Kingdom', 'TT': 'Taiwan', 'KS': 'South Korea'}
+        # Load sheets (skipping metadata rows)
+        t1 = pd.read_excel(file_path, sheet_name=sheet1, skiprows=3)
+        t2 = pd.read_excel(file_path, sheet_name=sheet2, skiprows=3)
+        t3 = pd.read_excel(file_path, sheet_name=sheet3, skiprows=2)
 
-    def fix_country(row):
-        # For Tier 1 & 2 use 'Country' column
-        if 'Country' in row and pd.notna(row['Country']):
-            return mapping.get(str(row['Country']).strip(), str(row['Country']).strip())
-        # For Tier 3 derive from Ticker
-        if 'Ticker' in row and pd.notna(row['Ticker']):
-            parts = str(row['Ticker']).split(' ')
+        # Mapping for cleaner visualization
+        country_fix = {'US': 'United States', 'UK': 'United Kingdom', 'TT': 'Taiwan', 'KS': 'South Korea'}
+
+        # Process Tier 1 & 2 (they have a Country column)
+        t1_2 = pd.concat([t1, t2])
+        t1_2['Final_Country'] = t1_2['Country'].str.strip().replace(country_fix)
+
+        # Process Tier 3 (extract from Ticker like 'AMD US Equity')
+        def get_country_t3(ticker):
+            if pd.isna(ticker): return "Unknown"
+            parts = str(ticker).split(' ')
             if len(parts) > 1:
-                return mapping.get(parts[1], parts[1])
-        return "Unknown"
+                return country_fix.get(parts[1], parts[1])
+            return "Unknown"
+        
+        t3['Final_Country'] = t3['Ticker'].apply(get_country_t3)
 
-    df1['Final_Country'] = df1.apply(fix_country, axis=1)
-    df2['Final_Country'] = df2.apply(fix_country, axis=1)
-    df3['Final_Country'] = df3.apply(fix_country, axis=1)
+        # Combine everything
+        combined = pd.concat([t1_2, t3])
+        val_col = 'Relationship Value (Q) (Mln) (USD)'
+        combined[val_col] = pd.to_numeric(combined[val_col], errors='coerce')
+        
+        return combined.dropna(subset=[val_col])
 
-    # 5. Combine and Numeric Conversion
-    combined = pd.concat([df1, df2, df3])
-    val_col = 'Relationship Value (Q) (Mln) (USD)'
-    combined[val_col] = pd.to_numeric(combined[val_col], errors='coerce')
-    
-    return combined.dropna(subset=[val_col])
+    except Exception as e:
+        st.error(f"Error reading file: {e}")
+        return None
 
-try:
-    data = load_and_clean_data(FILE_NAME)
-    
-    # Create Map Data
-    map_df = data.groupby('Final_Country')['Relationship Value (Q) (Mln) (USD)'].sum().reset_index()
-
-    # Visualization
-    fig = px.choropleth(map_df, 
-                        locations="Final_Country", 
-                        locationmode='country names',
-                        color="Relationship Value (Q) (Mln) (USD)",
-                        hover_name="Final_Country",
-                        color_continuous_scale="Viridis")
-    
-    st.plotly_chart(fig, use_container_width=True)
-    st.dataframe(map_df.sort_values(by="Relationship Value (Q) (Mln) (USD)", ascending=False))
-
-except Exception as e:
-    st.error(f"Critical Error: {e}")
-    st.info("Check if your file name on GitHub is exactly: " + FILE_NAME)
+# Execution
+if FILE_NAME in [f for f in import_os_list := __import__('os').listdir('.')]:
+    df = load_data(FILE_NAME)
+    if df is not None:
+        stats = df.groupby('Final_Country')['Relationship Value (Q) (Mln) (USD)'].sum().reset_index()
+        
+        # Plotly Map
+        fig = px.choropleth(stats, 
+                            locations="Final_Country", 
+                            locationmode='country names',
+                            color="Relationship Value (Q) (Mln) (USD)",
+                            hover_name="Final_Country",
+                            color_continuous_scale="Reds")
+        
+        st.plotly_chart(fig, use_container_width=True)
+        st.subheader("Data Summary")
+        st.dataframe(stats.sort_values(by='Relationship Value (Q) (Mln) (USD)', ascending=False))
+else:
+    st.warning(f"File '{FILE_NAME}' not found in GitHub repository. Please check the spelling.")
