@@ -1,84 +1,78 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import os
 
-st.set_page_config(page_title="Supply Chain Dashboard", layout="wide")
+st.set_page_config(page_title="Supply Chain Map", layout="wide")
 
-# This must match your filename on GitHub exactly
+# This MUST match the name of the file you uploaded to GitHub
 FILE_NAME = '17030125283_Isha Khatu_procurement_assignment.xlsx'
 
-st.title("🌍 Global Supplier Procurement Map")
+st.title("🌍 Supplier Network Map")
+
+# --- DEBUGGER SECTION ---
+if not os.path.exists(FILE_NAME):
+    st.error(f"❌ File Not Found: {FILE_NAME}")
+    st.info(f"Files detected in your GitHub: {os.listdir('.')}")
+    st.stop()
 
 @st.cache_data
-def load_data(file_path):
+def load_and_map_data(path):
     try:
-        xl = pd.ExcelFile(file_path)
-        all_sheets = xl.sheet_names
+        xl = pd.ExcelFile(path)
+        sheets = xl.sheet_names
         
-        # Helper to find sheets even with slight name differences
-        def find_sheet(keyword):
-            for name in all_sheets:
-                if keyword.lower() in name.lower():
-                    return name
-            return None
+        # Smart Search for Sheets
+        def get_sheet(name):
+            match = [s for s in sheets if name.lower() in s.lower()]
+            return match[0] if match else None
 
-        sheet1 = find_sheet("Tier-1") or find_sheet("Tier 1")
-        sheet2 = find_sheet("Tier-2") or find_sheet("Tier 2")
-        sheet3 = find_sheet("Tier-3") or find_sheet("Tier 3")
+        s1, s2, s3 = get_sheet("Tier-1"), get_sheet("Tier-2"), get_sheet("Tier-3")
+        
+        # Load Tier 1 & 2
+        t1 = pd.read_excel(path, sheet_name=s1, skiprows=3)
+        t2 = pd.read_excel(path, sheet_name=s2, skiprows=3)
+        
+        # Load Tier 3 (Fewer skips usually)
+        t3 = pd.read_excel(path, sheet_name=s3, skiprows=2)
 
-        if not sheet1 or not sheet2:
-            st.error(f"Could not find Tier sheets. Available sheets: {all_sheets}")
-            return None
+        # Standardize Country Names
+        c_fix = {'US': 'USA', 'UK': 'United Kingdom', 'TT': 'Taiwan', 'KS': 'South Korea', 'CH': 'China'}
 
-        # Load sheets (skipping metadata rows)
-        t1 = pd.read_excel(file_path, sheet_name=sheet1, skiprows=3)
-        t2 = pd.read_excel(file_path, sheet_name=sheet2, skiprows=3)
-        t3 = pd.read_excel(file_path, sheet_name=sheet3, skiprows=2)
+        # Combine T1 and T2
+        combined_1_2 = pd.concat([t1, t2])[['Country', 'Relationship Value (Q) (Mln) (USD)']]
+        combined_1_2['Country'] = combined_1_2['Country'].str.strip().replace(c_fix)
 
-        # Mapping for cleaner visualization
-        country_fix = {'US': 'United States', 'UK': 'United Kingdom', 'TT': 'Taiwan', 'KS': 'South Korea'}
-
-        # Process Tier 1 & 2 (they have a Country column)
-        t1_2 = pd.concat([t1, t2])
-        t1_2['Final_Country'] = t1_2['Country'].str.strip().replace(country_fix)
-
-        # Process Tier 3 (extract from Ticker like 'AMD US Equity')
-        def get_country_t3(ticker):
-            if pd.isna(ticker): return "Unknown"
+        # Process Tier 3 (Extract from Ticker)
+        def fix_t3(ticker):
             parts = str(ticker).split(' ')
-            if len(parts) > 1:
-                return country_fix.get(parts[1], parts[1])
-            return "Unknown"
+            return c_fix.get(parts[1], parts[1]) if len(parts) > 1 else "Unknown"
         
-        t3['Final_Country'] = t3['Ticker'].apply(get_country_t3)
+        t3['Country'] = t3['Ticker'].apply(fix_t3)
+        t3_clean = t3[['Country', 'Relationship Value (Q) (Mln) (USD)']]
 
-        # Combine everything
-        combined = pd.concat([t1_2, t3])
-        val_col = 'Relationship Value (Q) (Mln) (USD)'
-        combined[val_col] = pd.to_numeric(combined[val_col], errors='coerce')
-        
-        return combined.dropna(subset=[val_col])
+        # Final Merge
+        final = pd.concat([combined_1_2, t3_clean])
+        final['Value'] = pd.to_numeric(final['Relationship Value (Q) (Mln) (USD)'], errors='coerce')
+        return final.dropna(subset=['Value'])
 
     except Exception as e:
-        st.error(f"Error reading file: {e}")
+        st.error(f"Data Processing Error: {e}")
         return None
 
-# Execution
-if FILE_NAME in [f for f in import_os_list := __import__('os').listdir('.')]:
-    df = load_data(FILE_NAME)
-    if df is not None:
-        stats = df.groupby('Final_Country')['Relationship Value (Q) (Mln) (USD)'].sum().reset_index()
-        
-        # Plotly Map
-        fig = px.choropleth(stats, 
-                            locations="Final_Country", 
-                            locationmode='country names',
-                            color="Relationship Value (Q) (Mln) (USD)",
-                            hover_name="Final_Country",
-                            color_continuous_scale="Reds")
-        
-        st.plotly_chart(fig, use_container_width=True)
-        st.subheader("Data Summary")
-        st.dataframe(stats.sort_values(by='Relationship Value (Q) (Mln) (USD)', ascending=False))
-else:
-    st.warning(f"File '{FILE_NAME}' not found in GitHub repository. Please check the spelling.")
+# --- APP EXECUTION ---
+df = load_and_map_data(FILE_NAME)
+
+if df is not None:
+    map_data = df.groupby('Country')['Value'].sum().reset_index()
+    
+    fig = px.choropleth(map_data, 
+                        locations="Country", 
+                        locationmode='country names',
+                        color="Value",
+                        hover_name="Country",
+                        color_continuous_scale="Viridis",
+                        title="Total Procurement Spend by Country")
+    
+    st.plotly_chart(fig, use_container_width=True)
+    st.dataframe(map_data.sort_values('Value', ascending=False), hide_index=True)
